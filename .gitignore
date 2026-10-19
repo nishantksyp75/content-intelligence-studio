@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.gguf
+.gradio/
+
+audio_from_video.mp3
+test.mp4
