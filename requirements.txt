@@ -1,0 +1,9 @@
+python-docx
+faiss-cpu
+gradio
+openai-whisper
+huggingface-hub
+keybert
+llama-cpp-python
+sentence-transformers
+sumy
