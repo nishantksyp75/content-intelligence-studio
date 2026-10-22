@@ -10,7 +10,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-os.environ["HF_HOME"] = r"D:\huggingface-cache"
+os.environ.setdefault("HF_HOME", str(Path.home() / ".cache" / "huggingface"))
 
 import faiss
 import gradio as gr
@@ -39,21 +39,19 @@ kw_model = KeyBERT()
 print("Loading sentence embedding model...")
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-print("Locating Qwen model...")
-MODEL_PATH = hf_hub_download(
-    repo_id="Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-    filename="qwen2.5-1.5b-instruct-q4_k_m.gguf",
-)
+MODEL_PATH = None
+llm = None
 
-print("Loading local Qwen model...")
-llm = Llama(
-    model_path=MODEL_PATH,
-    n_ctx=2048,
-    n_threads=4,
-    verbose=False,
-)
+def get_llm():
+    global MODEL_PATH, llm
+    if llm is None:
+        print("Locating Qwen model...")
+        MODEL_PATH = hf_hub_download(repo_id="Qwen/Qwen2.5-1.5B-Instruct-GGUF", filename="qwen2.5-1.5b-instruct-q4_k_m.gguf")
+        print("Loading local Qwen model...")
+        llm = Llama(model_path=MODEL_PATH, n_ctx=1024, n_threads=2, verbose=False)
+    return llm
 
-print("All models loaded successfully!")
+print("Other models loaded successfully!")
 
 
 # ============================================================
@@ -126,7 +124,7 @@ def correct_transcription(text):
         print(f"Correcting transcript section {number}/{len(groups)}...")
 
         try:
-            response = llm.create_chat_completion(
+            response = get_llm().create_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": group},
@@ -306,7 +304,8 @@ def analyze_media(media_file):
 
         # Correct likely transcription errors with Qwen.
         print("Correcting transcript...")
-        corrected_text = correct_transcription(original_text).strip()
+        print("Skipping slow Qwen transcript correction; using Whisper transcript.")
+        corrected_text = original_text.strip()
 
         if not corrected_text:
             corrected_text = original_text
@@ -339,7 +338,7 @@ Write a clear, useful summary that a person can understand quickly.
 <|im_start|>assistant
 """
 
-            response = llm(
+            response = get_llm()(
                 summary_prompt,
                 max_tokens=400,
                 temperature=0.2,
@@ -513,7 +512,7 @@ def ask_question(question):
                 )
                 continue
 
-            response = llm.create_chat_completion(
+            response = get_llm().create_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {
