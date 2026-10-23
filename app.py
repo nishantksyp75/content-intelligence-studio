@@ -42,6 +42,54 @@ embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 MODEL_PATH = None
 llm = None
 
+def groq_chat(messages, max_completion_tokens=500, temperature=0.2):
+    """Call Groq's OpenAI-compatible chat completions API."""
+    import json
+    import urllib.request
+    import urllib.error
+
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not configured.")
+
+    payload = {
+        "model": "openai/gpt-oss-20b",
+        "messages": messages,
+        "max_completion_tokens": max_completion_tokens,
+        "temperature": temperature,
+    }
+
+    request = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "curl/8.0",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(
+            f"Groq API returned HTTP {error.code}: {details}"
+        ) from error
+
+    choices = result.get("choices", [])
+    if not choices:
+        raise RuntimeError("Groq returned no completion choices.")
+
+    content = choices[0].get("message", {}).get("content", "")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("Groq returned an empty response.")
+
+    return content.strip()
+
+
 def get_llm():
     global MODEL_PATH, llm
     if llm is None:
@@ -310,59 +358,55 @@ def analyze_media(media_file):
         if not corrected_text:
             corrected_text = original_text
 
-        # Generate an abstractive summary with Qwen.
-        print("Generating human-readable summary...")
+        # Generate an abstractive summary with Groq.
+        print("Generating human-readable summary with Groq...")
 
         try:
-            summary_prompt = f"""<|im_start|>system
-            You are an expert content analyst who creates clear,
-            accurate, human-readable summaries of transcripts.
+            # Bound the input size to keep requests manageable.
+            transcript_for_summary = corrected_text[:40000]
 
-Instructions:
-- Start with the main message.
-- Combine related ideas into coherent paragraphs.
-- Use natural, concise language.
-- Remove repetition and unnecessary filler.
-- Preserve important facts, names, numbers, and recommendations.
-- Do not invent information or add unsupported claims.
-- Organize key takeaways logically.
-- Return only the summary.
-<|im_end|>
-<|im_start|>user
-Summarize the following transcript:
-
-{corrected_text}
-
-Write a clear, useful summary that a person can understand quickly.
-<|im_end|>
-<|im_start|>assistant
-"""
-
-            response = get_llm()(
-                summary_prompt,
-                max_tokens=400,
+            summary = groq_chat(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert content analyst. Create an "
+                            "accurate, useful abstractive summary of the "
+                            "provided transcript. Start with the main message, "
+                            "combine related ideas into coherent paragraphs, "
+                            "remove repetition, and preserve important facts, "
+                            "names, numbers, and recommendations. Do not invent "
+                            "information. Return only the summary."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Summarize this transcript:\n\n"
+                            + transcript_for_summary
+                        ),
+                    },
+                ],
+                max_completion_tokens=700,
                 temperature=0.2,
-                top_p=0.9,
-                repeat_penalty=1.1,
-                stop=["<|im_end|>", "<|endoftext|>"],
             )
-
-            summary = response["choices"][0]["text"].strip()
-
-            if not summary:
-                raise ValueError("Qwen returned an empty summary.")
 
         except Exception as e:
-            print(f"Abstractive summarization failed: {e}")
+            print(f"Groq summarization failed: {e}")
             print("Falling back to TextRank...")
 
-            parser = PlaintextParser.from_string(
-                corrected_text,
-                Tokenizer("english"),
-            )
-
-            summary_sentences = text_rank(parser.document, 5)
-            summary = "\n\n".join(str(sentence) for sentence in summary_sentences)
+            try:
+                parser = PlaintextParser.from_string(
+                    corrected_text,
+                    Tokenizer("english"),
+                )
+                summary_sentences = text_rank(parser.document, 5)
+                summary = "\n\n".join(
+                    str(sentence) for sentence in summary_sentences
+                )
+            except Exception as fallback_error:
+                print(f"TextRank fallback failed: {fallback_error}")
+                summary = ""
 
             if not summary:
                 summary = "The transcript was too short to generate a summary."
@@ -478,10 +522,9 @@ def ask_question(question):
     question = question.strip()
     print("Question:", question)
 
-    # Split numbered questions into separate retrieval requests.
+    # Support numbered lists of questions as well as a single question.
     questions = re.split(r"(?m)^\s*\d+[.)]\s*", question)
     questions = [q.strip() for q in questions if q.strip()]
-
     if len(questions) <= 1:
         questions = [question]
 
@@ -490,13 +533,10 @@ def ask_question(question):
     system_prompt = (
         "You answer questions about an audio or video transcript. "
         "Use only the supplied transcript context as factual evidence. "
-        "Identify the user's intent. If the user asks for information, "
-        "answer directly from the context. If the user asks to generate, "
-        "list, or identify questions arising from the topic or transcript, "
-        "produce actual questions, not factual statements. Do not answer "
-        "generated questions unless requested. Do not invent facts or "
-        "introduce unsupported topics. If context is insufficient, say so. "
-        "Keep responses relevant, clear, and concise."
+        "Answer the user's question directly and concisely. If asked to "
+        "generate questions, provide actual questions rather than answers. "
+        "Do not invent facts or introduce unsupported topics. If the "
+        "context is insufficient, say so."
     )
 
     for number, current_question in enumerate(questions, start=1):
@@ -506,51 +546,37 @@ def ask_question(question):
             context = retrieve_context(current_question, k=5)
 
             if not context.strip():
-                answers.append(
-                    f"{number}. {current_question}\n"
+                answer = (
                     "I could not find relevant information in the transcript."
                 )
-                continue
-
-            response = get_llm().create_chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Transcript context:\n{context}\n\n"
-                            f"Question: {current_question}\n\n"
-                            "Answer using only the supplied context."
-                        ),
-                    },
-                ],
-                max_tokens=250,
-                temperature=0.0,
-            )
-
-            choices = response.get("choices", [])
-            answer = (
-                choices[0].get("message", {}).get("content", "").strip()
-                if choices
-                else ""
-            )
-
-            if not answer:
-                answer = "The model did not generate an answer."
+            else:
+                answer = groq_chat(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Transcript context:\n{context}\n\n"
+                                f"Question: {current_question}\n\n"
+                                "Answer using only the supplied context."
+                            ),
+                        },
+                    ],
+                    max_completion_tokens=400,
+                    temperature=0.1,
+                )
 
             answers.append(f"{number}. {current_question}\n{answer}")
-            print(f"Answer {number}:", answer)
+            print(f"Answer {number} generated successfully.")
 
         except Exception as error:
             print(
                 f"Question-answering error for question {number}:",
                 repr(error),
             )
-
             answers.append(
                 f"{number}. {current_question}\n"
-                "An error occurred while generating this answer. "
-                "Check the terminal for details."
+                "Answer generation failed. Please try again."
             )
 
     return "\n\n".join(answers)
@@ -780,7 +806,7 @@ with gr.Blocks(
 
         with gr.Tab("Summary"):
             summary_output = gr.Textbox(
-                label="Extractive summary",
+                label="Abstractive summary",
                 placeholder="The key points will appear here.",
                 lines=8,
                 interactive=False,
@@ -833,48 +859,241 @@ with gr.Blocks(
 
         return answer, history
 
-    analyze_button.click(
-        fn=analyze_media,
-        inputs=[media_file],
-        outputs=[
-            transcript_output,
-            summary_output,
-            keywords_output,
-        ],
-    )
+    analysis_status = gr.Markdown("")
+    answer_status = gr.Markdown("")
+    docx_status = gr.Markdown("")
 
-    ask_button.click(
-        fn=answer_and_record,
-        inputs=[question_input, qa_history],
-        outputs=[answer_output, qa_history],
-    )
-
-    question_input.submit(
-        fn=answer_and_record,
-        inputs=[question_input, qa_history],
-        outputs=[answer_output, qa_history],
-    )
-
-    # Export formatted Word report only.
+    # Export report components
     gr.Markdown("## 04 · Export report")
-
     gr.Markdown(
         "Download the transcript, summary, keywords, and recorded Q&A "
         "as a formatted Word document."
     )
-
     docx_button = gr.Button(
         "Export Word Report",
         variant="primary",
         elem_classes=["primary-btn"],
     )
-
     docx_file = gr.File(
         label="Download Word report",
         interactive=False,
     )
 
+    # Each action locks only its own button until another file is uploaded.
+    def upload_unlock(media_path):
+        if media_path is None:
+            return (
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+            )
+        return (
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(interactive=True, value="Analyze media"),
+            gr.update(interactive=True, value="Generate answer"),
+            gr.update(interactive=True, value="Export Word Report"),
+        )
+
+    def analysis_started():
+        return (
+            gr.update(value="⏳ **Analyzing media... Please wait.**"),
+            gr.update(interactive=False, value="Analyze media"),
+            gr.update(),
+            gr.update(),
+        )
+
+    def analysis_done(transcript, summary, keywords):
+        return (
+            transcript,
+            summary,
+            keywords,
+            gr.update(value="✅ **Analysis complete. Upload a new file to enable Analyze media again.**"),
+            gr.update(interactive=False, value="Analyze media"),
+            gr.update(),
+            gr.update(),
+        )
+
+    def analysis_failed():
+        return (
+            gr.update(value="❌ **Analysis failed. Check server logs. Upload a new file to enable Analyze media again.**"),
+            gr.update(interactive=False, value="Analyze media"),
+            gr.update(),
+            gr.update(),
+        )
+
+    def answer_started():
+        return (
+            gr.update(value="⏳ **Generating answer... Please wait.**"),
+            gr.update(),
+            gr.update(interactive=False, value="Generate answer"),
+            gr.update(),
+        )
+
+    def answer_done(answer, history):
+        return (
+            answer,
+            history,
+            gr.update(value="✅ **Answer generated. Upload a new file to enable Generate answer again.**"),
+            gr.update(),
+            gr.update(interactive=False, value="Generate answer"),
+            gr.update(),
+        )
+
+    def answer_failed():
+        return (
+            "Answer generation failed. Please try again after uploading a new file.",
+            gr.update(value="❌ **Answer generation failed. Check server logs.**"),
+            gr.update(),
+            gr.update(interactive=False, value="Generate answer"),
+            gr.update(),
+        )
+
+    def export_started():
+        return (
+            gr.update(value="⏳ **Generating Word report... Please wait.**"),
+            gr.update(),
+            gr.update(),
+            gr.update(interactive=False, value="Export Word Report"),
+        )
+
+    def export_done():
+        return (
+            gr.update(value="✅ **Report exported. Upload a new file to enable export again.**"),
+            gr.update(),
+            gr.update(),
+            gr.update(interactive=False, value="Export Word Report"),
+        )
+
+    def export_failed():
+        return (
+            gr.update(value="❌ **Report export failed. Check server logs. Upload a new file to enable export again.**"),
+            gr.update(),
+            gr.update(),
+            gr.update(interactive=False, value="Export Word Report"),
+        )
+
+    # Uploading/re-uploading a file unlocks all three buttons.
+    media_file.change(
+        fn=upload_unlock,
+        inputs=[media_file],
+        outputs=[
+            analysis_status,
+            answer_status,
+            docx_status,
+            analyze_button,
+            ask_button,
+            docx_button,
+        ],
+        queue=False,
+    )
+
+    analysis_event = analyze_button.click(
+        fn=analysis_started,
+        inputs=[],
+        outputs=[analysis_status, analyze_button, ask_button, docx_button],
+        queue=False,
+        trigger_mode="once",
+    ).then(
+        fn=analyze_media,
+        inputs=[media_file],
+        outputs=[transcript_output, summary_output, keywords_output],
+    ).then(
+        fn=analysis_done,
+        inputs=[transcript_output, summary_output, keywords_output],
+        outputs=[
+            transcript_output,
+            summary_output,
+            keywords_output,
+            analysis_status,
+            analyze_button,
+            ask_button,
+            docx_button,
+        ],
+    ).failure(
+        fn=analysis_failed,
+        inputs=[],
+        outputs=[analysis_status, analyze_button, ask_button, docx_button],
+    )
+
+    ask_event = ask_button.click(
+        fn=answer_started,
+        inputs=[],
+        outputs=[answer_status, analyze_button, ask_button, docx_button],
+        queue=False,
+        trigger_mode="once",
+    ).then(
+        fn=answer_and_record,
+        inputs=[question_input, qa_history],
+        outputs=[answer_output, qa_history],
+    ).then(
+        fn=answer_done,
+        inputs=[answer_output, qa_history],
+        outputs=[
+            answer_output,
+            qa_history,
+            answer_status,
+            analyze_button,
+            ask_button,
+            docx_button,
+        ],
+    ).failure(
+        fn=answer_failed,
+        inputs=[],
+        outputs=[
+            answer_output,
+            answer_status,
+            analyze_button,
+            ask_button,
+            docx_button,
+        ],
+    )
+
+    # Enter key follows the same independent Generate Answer lock.
+    question_input.submit(
+        fn=answer_started,
+        inputs=[],
+        outputs=[answer_status, analyze_button, ask_button, docx_button],
+        queue=False,
+        trigger_mode="once",
+    ).then(
+        fn=answer_and_record,
+        inputs=[question_input, qa_history],
+        outputs=[answer_output, qa_history],
+    ).then(
+        fn=answer_done,
+        inputs=[answer_output, qa_history],
+        outputs=[
+            answer_output,
+            qa_history,
+            answer_status,
+            analyze_button,
+            ask_button,
+            docx_button,
+        ],
+    ).failure(
+        fn=answer_failed,
+        inputs=[],
+        outputs=[
+            answer_output,
+            answer_status,
+            analyze_button,
+            ask_button,
+            docx_button,
+        ],
+    )
+
     docx_button.click(
+        fn=export_started,
+        inputs=[],
+        outputs=[docx_status, analyze_button, ask_button, docx_button],
+        queue=False,
+        trigger_mode="once",
+    ).then(
         fn=export_report_docx,
         inputs=[
             transcript_output,
@@ -883,6 +1102,14 @@ with gr.Blocks(
             qa_history,
         ],
         outputs=[docx_file],
+    ).then(
+        fn=export_done,
+        inputs=[],
+        outputs=[docx_status, analyze_button, ask_button, docx_button],
+    ).failure(
+        fn=export_failed,
+        inputs=[],
+        outputs=[docx_status, analyze_button, ask_button, docx_button],
     )
 
 
