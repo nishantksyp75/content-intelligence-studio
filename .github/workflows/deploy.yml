@@ -47,6 +47,16 @@ jobs:
             "$GITHUB_WORKSPACE/" \
             "$EC2_USER@$EC2_HOST:/home/ubuntu/content-intelligence-studio/"
 
+      - name: Configure Groq API key on EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          test -n "$GROQ_API_KEY"
+          printf 'GROQ_API_KEY=%s\n' "$GROQ_API_KEY" | ssh "$EC2_USER@$EC2_HOST" \
+            'umask 077; cat > /home/ubuntu/content-intelligence-studio/.env'
+
       - name: Restart application
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
