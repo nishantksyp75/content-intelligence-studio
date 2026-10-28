@@ -115,11 +115,11 @@ Represent text using Sentence Transformers.
 
 ### 💬 AI Question Answering
 
-Use a local Qwen language model for supported question-answering workflows.
+Ask questions about available content using Groq-powered language-model responses grounded in retrieved context.
 
-- Ask questions about available content
-- Generate model-based responses
-- Run inference locally on the server
+- Ask questions about the available content
+- Retrieve relevant context for question answering
+- Generate responses through the configured Groq API
 
 </td>
 <td width="50%" valign="top">
@@ -144,11 +144,14 @@ The project integrates several components:
 | Capability | Component |
 |---|---|
 | Audio transcription | OpenAI Whisper |
-| Extractive summarization | TextRank summarizer |
+| Extractive summarization fallback | TextRank summarizer |
 | Keyword extraction | KeyBERT |
-| Text embeddings | Sentence Transformers (`all-MiniLM-L6-v2`) |
-| Local language model | Qwen2.5-1.5B-Instruct GGUF with llama.cpp |
+| Text embeddings and retrieval | Sentence Transformers (`all-MiniLM-L6-v2`) and FAISS |
+| Local model initialization (transcription correction currently skipped) | Qwen2.5-1.5B-Instruct GGUF with llama.cpp |
+| Language-model summaries and question answering | Groq API (`openai/gpt-oss-20b`) |
+| Report export | python-docx (DOCX) |
 | Web interface | Gradio |
+| Hosted deployment | Ubuntu, systemd, Nginx, HTTPS |
 
 Model availability, performance, and supported inputs depend on the application configuration and server resources.
 
@@ -158,15 +161,11 @@ Model availability, performance, and supported inputs depend on the application 
 
 ### Live application
 
-**Status: Public demo link not yet verified.**
+**Live application:** [https://contenointel.tech](https://contenointel.tech)
 
-The application is configured to run through Gradio on the server. A public-facing URL requires a reachable server, an appropriate network configuration, and a running application.
+The application runs on an Ubuntu server. Nginx handles HTTPS and forwards requests to the Gradio application on port `7860`, managed by systemd.
 
-When a stable deployment is available, replace the placeholder below with its actual URL:
-
-**[Open Content Intelligence Studio](YOUR_PUBLIC_DEMO_URL)**
-
-> Replace `YOUR_PUBLIC_DEMO_URL` before publishing a real demo link. Do not use a local address such as `127.0.0.1` as a public demo URL.
+Availability depends on the server, network, and external model/API services.
 
 ### Screenshots and walkthrough
 
@@ -357,12 +356,12 @@ Unauthenticated downloads may have lower rate limits. If necessary, configure a 
 
 Potential future improvements:
 
-- [ ] Publish a stable, secure hosted demo
+- [x] Configure the hosted application with HTTPS
 - [ ] Add screenshots and an animated walkthrough
 - [ ] Add automated tests
 - [ ] Improve progress and error reporting
 - [ ] Add configurable model settings
-- [ ] Add deployment documentation
+- [x] Document the hosted deployment in the README
 - [ ] Improve performance and resource management
 
 ## 🤝 Contributing
