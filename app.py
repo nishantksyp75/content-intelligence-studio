@@ -938,9 +938,9 @@ with gr.Blocks(
         return (
             answer,
             history,
-            gr.update(value="✅ **Answer generated. Upload a new file to enable Generate answer again.**"),
+            gr.update(value="✅ **Answer generated successfully. You can ask another question.**"),
             gr.update(),
-            gr.update(interactive=False, value="Generate answer"),
+            gr.update(interactive=True, value="Generate answer"),
             gr.update(),
         )
 
@@ -949,7 +949,7 @@ with gr.Blocks(
             "Answer generation failed. Please try again after uploading a new file.",
             gr.update(value="❌ **Answer generation failed. Check server logs.**"),
             gr.update(),
-            gr.update(interactive=False, value="Generate answer"),
+            gr.update(interactive=True, value="Generate answer"),
             gr.update(),
         )
 
@@ -963,18 +963,18 @@ with gr.Blocks(
 
     def export_done():
         return (
-            gr.update(value="✅ **Report exported. Upload a new file to enable export again.**"),
+            gr.update(value="✅ **Report exported successfully. You can export again anytime.**"),
             gr.update(),
             gr.update(),
-            gr.update(interactive=False, value="Export Word Report"),
+            gr.update(interactive=True, value="Export Word Report"),
         )
 
     def export_failed():
         return (
-            gr.update(value="❌ **Report export failed. Check server logs. Upload a new file to enable export again.**"),
+            gr.update(value="❌ **Report export failed. Check server logs. You can retry.**"),
             gr.update(),
             gr.update(),
-            gr.update(interactive=False, value="Export Word Report"),
+            gr.update(interactive=True, value="Export Word Report"),
         )
 
     # Uploading/re-uploading a file unlocks all three buttons.
